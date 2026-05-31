@@ -110,13 +110,23 @@ them.
 - Runs by default; falls back to plain `updatetools --plain` automatically when
   not attached to a TTY (pipes, cron, CI), or when you pass `--plain`.
 
-On finish it prints a summary and the path to the full log:
+When all steps finish, the **summary is shown inside the dashboard** (counts,
+failed steps, log path) and it waits for you to **press `q`** to quit:
 
 ```
-⟳ updatetools finished in 00:57
-  ✓ 11 updated   – 19 skipped   ✗ 1 failed
-Full log: /var/folders/.../updatetools-39499.log
+   ⟳ updatetools finished in 00:57
+   ✓ 11 updated   – 19 skipped   ✗ 1 failed
+
+   Failed steps:
+     ✗ Codex CLI
+
+   Full log: /var/folders/.../updatetools-39499.log
+
+   Press q to quit
 ```
+
+The same summary is also echoed to the normal screen afterwards, so the log path
+stays in your scrollback.
 
 ## Notes & gotchas
 
