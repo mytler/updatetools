@@ -21,6 +21,11 @@ for arg in "$@"; do
   case "$arg" in
     --macos|--all) MACOS_UPDATES=1 ;;
     --no-greedy)   GREEDY=0 ;;
+    --plain|--no-pretty|--no-tui)
+      # Caller explicitly wants plain output — hand off to updatetools --plain.
+      plain="$(dirname "$0")/updatetools"
+      rest=(); for a in "$@"; do case "$a" in --plain|--no-pretty|--no-tui) ;; *) rest+=("$a") ;; esac; done
+      exec "$plain" --plain ${rest[@]+"${rest[@]}"} ;;
     -h|--help)     sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $arg"; exit 2 ;;
   esac
@@ -222,7 +227,8 @@ render() {
 # ---------------------------------------------------------------------------
 if ! [ -t 1 ]; then
   echo "Not a TTY — falling back to plain updatetools."
-  exec "$(dirname "$0")/updatetools" "$@"
+  # Pass --plain so updatetools doesn't try to re-launch this dashboard (exec loop).
+  exec "$(dirname "$0")/updatetools" --plain "$@"
 fi
 
 tput smcup 2>/dev/null   # alternate screen

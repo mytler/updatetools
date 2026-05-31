@@ -64,19 +64,24 @@ cp updatetools updatetools-tui ~/.local/bin/
 ## Usage
 
 ```bash
-updatetools                 # update all software (no OS reboot)
-updatetools --pretty        # same, with the animated dashboard
+updatetools                 # animated dashboard (default, on a terminal)
+updatetools --plain         # plain scrolling text output (no dashboard)
 updatetools --macos         # ALSO install macOS + App Store updates (may reboot!)
-updatetools --pretty --macos
+updatetools --plain --macos
 updatetools --no-greedy     # don't force-upgrade self-managing casks
 updatetools --help
 ```
+
+The **dashboard is the default** on an interactive terminal. When stdout isn't a
+TTY (pipes, cron, CI) it automatically uses plain text — so scripting it is safe
+without any flag.
 
 ### Flags
 
 | Flag | Effect |
 |------|--------|
-| `--pretty`, `--tui` | Run the animated full-screen dashboard (`updatetools-tui`). |
+| `--plain`, `--no-pretty`, `--no-tui` | Force plain scrolling output instead of the dashboard. |
+| `--pretty`, `--tui` | Force the dashboard (default; useful only to override `PLAIN=1`). |
 | `--macos`, `--all` | Install macOS **and** Mac App Store updates. Off by default. |
 | `--no-greedy` | Skip `--greedy` so casks that self-update are left alone. |
 
@@ -84,6 +89,7 @@ updatetools --help
 
 | Var | Same as |
 |-----|---------|
+| `PLAIN=1` | `--plain` |
 | `MACOS_UPDATES=1` | `--macos` |
 | `GREEDY=0` | `--no-greedy` |
 
@@ -101,8 +107,8 @@ them.
 - Status icons: `✓` done · `–` skipped · `✗` failed · `○` pending.
 - Uses the alternate screen buffer (like `htop`/`vim`) and restores the terminal
   cleanly on exit or `Ctrl-C`.
-- Falls back to plain `updatetools` automatically when not attached to a TTY
-  (pipes, cron, CI).
+- Runs by default; falls back to plain `updatetools --plain` automatically when
+  not attached to a TTY (pipes, cron, CI), or when you pass `--plain`.
 
 On finish it prints a summary and the path to the full log:
 

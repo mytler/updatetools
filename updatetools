@@ -2,7 +2,8 @@
 # updatetools — update everything updatable on this Mac.
 #
 # Usage:
-#   updatetools                 # update all package managers & tools (safe, no OS reboot)
+#   updatetools                 # animated dashboard (default, on a terminal)
+#   updatetools --plain         # plain scrolling text output (no dashboard)
 #   updatetools --macos         # ALSO install macOS + App Store updates (may reboot!)
 #   updatetools --all           # everything, including macOS updates (alias for --macos)
 #   updatetools --no-greedy     # don't force-upgrade casks that self-manage
@@ -10,6 +11,7 @@
 # Env toggles:
 #   MACOS_UPDATES=1             # same as --macos
 #   GREEDY=0                    # same as --no-greedy
+#   PLAIN=1                     # same as --plain
 set -u
 
 # ---------------------------------------------------------------------------
@@ -17,24 +19,36 @@ set -u
 # ---------------------------------------------------------------------------
 MACOS_UPDATES="${MACOS_UPDATES:-0}"
 GREEDY="${GREEDY:-1}"
+PLAIN="${PLAIN:-0}"
 
-PASS_ARGS=()
 for arg in "$@"; do
   case "$arg" in
-    --pretty|--tui)
-      tui="$(dirname "$0")/updatetools-tui"
-      [ -x "$tui" ] || { echo "updatetools-tui not found next to updatetools"; exit 1; }
-      # forward all OTHER args to the TUI
-      rest=(); for a in "$@"; do [ "$a" = --pretty ] || [ "$a" = --tui ] || rest+=("$a"); done
-      exec "$tui" "${rest[@]+"${rest[@]}"}" ;;
-    --macos|--all)  MACOS_UPDATES=1 ;;
-    --no-greedy)    GREEDY=0 ;;
+    --plain|--no-pretty|--no-tui) PLAIN=1 ;;
+    --pretty|--tui)               PLAIN=0 ;;
+    --macos|--all)                MACOS_UPDATES=1 ;;
+    --no-greedy)                  GREEDY=0 ;;
     -h|--help)
-      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) echo "Unknown option: $arg (use --help)"; exit 2 ;;
   esac
 done
+
+# Default to the animated dashboard on an interactive terminal. Drop to plain
+# text when --plain is given OR when stdout isn't a TTY (pipes, cron, CI).
+# Guard against an exec loop: only the plain path runs the body below; the TUI
+# falls back here with --plain when it can't draw.
+if [ "$PLAIN" != "1" ] && [ -t 1 ]; then
+  tui="$(dirname "$0")/updatetools-tui"
+  if [ -x "$tui" ]; then
+    rest=()
+    for a in "$@"; do
+      case "$a" in --plain|--no-pretty|--no-tui|--pretty|--tui) ;; *) rest+=("$a") ;; esac
+    done
+    exec "$tui" ${rest[@]+"${rest[@]}"}
+  fi
+  # else: TUI missing — fall through to plain output.
+fi
 
 if [ "$GREEDY" = "1" ]; then GREEDY_FLAG="--greedy"; else GREEDY_FLAG=""; fi
 
