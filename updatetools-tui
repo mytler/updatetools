@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+# updatetools-tui — animated full-screen dashboard front-end for updatetools.
+#
+# Runs the real update steps one by one and renders a live dashboard:
+# spinner, per-step status, progress bar, elapsed timer, and a tail of the
+# current command's output. Verbose output is streamed to a log file so the
+# dashboard stays clean.
+#
+# Usage:
+#   updatetools-tui            # update all software (no OS reboot)
+#   updatetools-tui --macos    # ALSO install macOS + App Store updates
+#   updatetools-tui --no-greedy
+set -u
+
+# ---------------------------------------------------------------------------
+# Config / args
+# ---------------------------------------------------------------------------
+MACOS_UPDATES="${MACOS_UPDATES:-0}"
+GREEDY="${GREEDY:-1}"
+for arg in "$@"; do
+  case "$arg" in
+    --macos|--all) MACOS_UPDATES=1 ;;
+    --no-greedy)   GREEDY=0 ;;
+    -h|--help)     sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "Unknown option: $arg"; exit 2 ;;
+  esac
+done
+[ "$GREEDY" = "1" ] && GREEDY_FLAG="--greedy" || GREEDY_FLAG=""
+
+# ---------------------------------------------------------------------------
+# Homebrew env
+# ---------------------------------------------------------------------------
+if [ -x /opt/homebrew/bin/brew ]; then eval "$(/opt/homebrew/bin/brew shellenv)"
+elif [ -x /usr/local/bin/brew ]; then eval "$(/usr/local/bin/brew shellenv)"; fi
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Ensure a UTF-8 locale so ${#str} counts characters (not bytes) — keeps the
+# box border aligned regardless of how the shell was invoked.
+if ! printf '%s' "${LC_ALL:-${LANG:-}}" | grep -qi 'utf-8'; then
+  if locale -a 2>/dev/null | grep -qi '^en_US.UTF-8$'; then
+    export LC_ALL=en_US.UTF-8
+  fi
+fi
+
+# Portable symlink resolver (BSD readlink lacks a reliable -f).
+resolve_link() {
+  local p="$1" t dir
+  while [ -L "$p" ]; do
+    t="$(readlink "$p")"
+    case "$t" in
+      /*) p="$t" ;;
+      *)  dir="$(cd "$(dirname "$p")" && pwd)"; p="$(cd "$dir" && cd "$(dirname "$t")" && pwd)/$(basename "$t")" ;;
+    esac
+  done
+  printf '%s' "$p"
+}
+
+# Codex CLI may be an npm package in a NON-default prefix (e.g. iCloud .local),
+# and/or the codex-app desktop cask. Update whatever is actually present.
+update_codex() {
+  local real prefix updated=0
+  real="$(resolve_link "$(command -v codex)" 2>/dev/null)"
+  case "$real" in
+    */lib/node_modules/@openai/codex/*)
+      prefix="${real%%/lib/node_modules/*}"
+      echo "Updating codex CLI in prefix: $prefix"
+      npm install -g @openai/codex@latest --prefix "$prefix" && updated=1 ;;
+    *)
+      if have npm && npm list -g @openai/codex >/dev/null 2>&1; then
+        npm install -g @openai/codex@latest && updated=1
+      fi ;;
+  esac
+  if have brew && brew list --cask codex-app >/dev/null 2>&1; then
+    echo "Updating codex-app cask"
+    brew upgrade --cask codex-app $GREEDY_FLAG; updated=1
+  fi
+  [ "$updated" = 1 ] || { echo "codex present but no known update source matched"; return 1; }
+}
+
+LOG="${TMPDIR:-/tmp}/updatetools-$$.log"
+: > "$LOG"
+
+# ---------------------------------------------------------------------------
+# Step table:  "label¦guard¦command"
+#   guard : shell test; if it fails the step is marked SKIP and not run
+#   command : the actual work (stdout+stderr -> log)
+# ---------------------------------------------------------------------------
+STEPS=(
+  "Homebrew · update index¦have brew¦brew update"
+  "Homebrew · upgrade formulae¦have brew¦brew upgrade"
+  "Homebrew · upgrade casks¦have brew¦brew upgrade --cask $GREEDY_FLAG"
+  "Homebrew · autoremove + cleanup¦have brew¦brew autoremove; brew cleanup -s"
+  "npm · global packages¦have npm¦npm update -g; npm cache verify"
+  "pnpm · global packages¦have pnpm¦pnpm self-update 2>/dev/null||brew upgrade pnpm 2>/dev/null; pnpm update -g --latest"
+  "yarn · stable¦have yarn¦corepack enable; yarn set version stable"
+  "bun · self-upgrade¦have bun¦bun upgrade"
+  "deno · upgrade¦have deno¦deno upgrade 2>/dev/null||brew upgrade deno"
+  "pipx · upgrade all¦have pipx¦pipx upgrade-all"
+  "uv · self + tools¦have uv¦{ uv self update 2>/dev/null||brew upgrade uv 2>/dev/null; }; uv tool upgrade --all 2>/dev/null||true"
+  "conda · update all¦have conda¦conda update -n base -c defaults conda -y; conda update --all -y"
+  "rustup · update toolchains¦have rustup¦rustup update"
+  "cargo · update binaries¦have cargo¦{ have cargo-install-update||cargo install cargo-update; }; cargo install-update -a"
+  "composer · self + global¦have composer¦composer self-update; composer global update"
+  "mise · self + tools¦have mise¦{ mise self-update -y 2>/dev/null||brew upgrade mise 2>/dev/null; }; mise upgrade"
+  "asdf · plugins¦have asdf¦asdf update; asdf plugin update --all"
+  "gcloud · components¦have gcloud¦gcloud components update --quiet"
+  "az · CLI¦have az¦az upgrade --yes"
+  "helm · repo update¦have helm¦helm repo update"
+  "krew · plugins¦have kubectl && kubectl krew version >/dev/null 2>&1¦kubectl krew upgrade"
+  "flutter · upgrade¦have flutter¦flutter upgrade"
+  "dotnet · global tools¦have dotnet¦dotnet tool update --global --all"
+  "Codex CLI¦have codex¦update_codex"
+  "Supabase CLI¦have supabase¦if have brew && brew list supabase >/dev/null 2>&1; then brew upgrade supabase; elif have npm; then npm install -g supabase@latest; fi"
+  "Vercel CLI¦have vercel && have npm¦npm install -g vercel@latest"
+  "gh · extensions¦have gh¦gh extension upgrade --all"
+  "tldr · cache¦have tldr¦tldr --update 2>/dev/null||tldr -u"
+  "VS Code · extensions¦have code¦code --list-extensions|sed '/^[[:space:]]*\$/d'|while IFS= read -r e; do code --install-extension \"\$e\" --force; done"
+  "App Store · upgrade¦have mas && [ \"$MACOS_UPDATES\" = 1 ]¦mas upgrade"
+  "macOS · install updates¦[ \"$MACOS_UPDATES\" = 1 ]¦sudo softwareupdate -ia --verbose"
+)
+
+TOTAL=${#STEPS[@]}
+STATUS=()                       # done|skip|fail|run|pending per step
+for ((i=0;i<TOTAL;i++)); do STATUS[i]="pending"; done
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+SPIN='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+FRAME=0
+T0=$SECONDS
+
+# colors
+C_RST=$'\033[0m'; C_DIM=$'\033[2m'; C_CYAN=$'\033[1;36m'
+C_GRN=$'\033[1;32m'; C_RED=$'\033[1;31m'; C_YEL=$'\033[1;33m'
+C_MAG=$'\033[1;35m'; C_BLU=$'\033[1;34m'; C_BLK=$'\033[30m'
+
+cleanup() { tput rmcup 2>/dev/null; tput cnorm 2>/dev/null; }
+trap 'cleanup; echo; echo "Interrupted. Full log: '"$LOG"'"; exit 130' INT TERM
+
+fmt_time() { printf '%02d:%02d' $(( $1/60 )) $(( $1%60 )); }
+
+bar() { # $1 done count, $2 total, width 28
+  local done=$1 total=$2 w=28 filled
+  filled=$(( total>0 ? done*w/total : 0 ))
+  local s="" ; local i
+  for ((i=0;i<filled;i++)); do s+="█"; done
+  for ((i=filled;i<w;i++)); do s+="░"; done
+  printf '%s' "$s"
+}
+
+# draw_box <title> — a self-closing box with a black border. Width is fixed and
+# the title is centered by measured length, so the right edge always lines up.
+draw_box() {
+  local title="$1" W=44 t left right dash lsp rsp i
+  t=${#title}; (( t > W )) && t=$W
+  left=$(( (W - t) / 2 )); right=$(( W - t - left ))
+  dash=""; for ((i=0;i<W;i++)); do dash+="─"; done
+  printf -v lsp '%*s' "$left"  ''
+  printf -v rsp '%*s' "$right" ''
+  printf '%s┌%s┐%s\n'         "$C_BLK" "$dash" "$C_RST"
+  printf '%s│%*s│%s\n'        "$C_BLK" "$W" "" "$C_RST"
+  printf '%s│%s%s%s%s%s%s│%s\n' "$C_BLK" "$lsp" "$C_CYAN" "$title" "$C_RST" "$rsp" "$C_BLK" "$C_RST"
+  printf '%s│%*s│%s\n'        "$C_BLK" "$W" "" "$C_RST"
+  printf '%s└%s┘%s\n'         "$C_BLK" "$dash" "$C_RST"
+}
+
+# Build the banner once — it never changes, so don't recompute it every frame.
+BANNER="$(draw_box "updatetools  ·  keeping your Mac fresh")"
+
+render() {
+  local running_idx="${1:-} "
+  local frame_char="${SPIN:FRAME%${#SPIN}:1}"
+  local cols; cols=$(tput cols 2>/dev/null || echo 80)
+  printf '\033[H\033[J'   # home + clear to end
+
+  # banner (self-closing box, black border) — precomputed
+  printf '%s\n\n' "$BANNER"
+
+  # progress
+  local fin=0 i
+  for ((i=0;i<TOTAL;i++)); do
+    case "${STATUS[i]}" in done|skip|fail) fin=$((fin+1));; esac
+  done
+  local pct=$(( TOTAL>0 ? fin*100/TOTAL : 0 ))
+  printf '  %s[%s]%s  %s%d/%d%s  %s%3d%%%s     ⏱  %s%s%s\n\n' \
+    "$C_BLU" "$(bar "$fin" "$TOTAL")" "$C_RST" \
+    "$C_CYAN" "$fin" "$TOTAL" "$C_RST" \
+    "$C_YEL" "$pct" "$C_RST" \
+    "$C_DIM" "$(fmt_time $((SECONDS-T0)))" "$C_RST"
+
+  # step list
+  for ((i=0;i<TOTAL;i++)); do
+    local label="${STEPS[i]%%¦*}"
+    local icon color
+    case "${STATUS[i]}" in
+      done) icon="✓"; color="$C_GRN" ;;
+      skip) icon="–"; color="$C_DIM" ;;
+      fail) icon="✗"; color="$C_RED" ;;
+      run)  icon="$frame_char"; color="$C_YEL" ;;
+      *)    icon="○"; color="$C_DIM" ;;
+    esac
+    if [ "${STATUS[i]}" = "skip" ]; then
+      printf '   %s%s %s%s\n' "$color" "$icon" "$label" "$C_RST"
+    else
+      printf '   %s%s%s %s%s\n' "$color" "$icon" "$C_RST" \
+        "$( [ "${STATUS[i]}" = run ] && printf '%s' "$C_YEL" )" "$label$C_RST"
+    fi
+  done
+
+  # live tail of current step
+  if [ -n "${running_idx// /}" ]; then
+    local tail_line
+    tail_line=$(tail -n 1 "$LOG" 2>/dev/null | tr -d '\r' | cut -c1-$((cols-6)))
+    printf '\n   %s↳ %s%s\n' "$C_DIM" "$tail_line" "$C_RST"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+if ! [ -t 1 ]; then
+  echo "Not a TTY — falling back to plain updatetools."
+  exec "$(dirname "$0")/updatetools" "$@"
+fi
+
+tput smcup 2>/dev/null   # alternate screen
+tput civis 2>/dev/null   # hide cursor
+
+for ((i=0;i<TOTAL;i++)); do
+  entry="${STEPS[i]}"
+  guard="${entry#*¦}"; guard="${guard%%¦*}"
+  cmd="${entry##*¦}"
+
+  if ! eval "$guard" >/dev/null 2>&1; then
+    STATUS[i]="skip"; render; continue
+  fi
+
+  STATUS[i]="run"
+  {
+    echo; echo "######## ${entry%%¦*} ########";
+    eval "$cmd";
+  } >>"$LOG" 2>&1 &
+  pid=$!
+
+  while kill -0 "$pid" 2>/dev/null; do
+    FRAME=$((FRAME+1))
+    render "$i"
+    sleep 0.12
+  done
+  wait "$pid"; rc=$?
+  [ "$rc" -eq 0 ] && STATUS[i]="done" || STATUS[i]="fail"
+  render
+done
+
+# final frame
+render
+sleep 0.3
+cleanup
+
+# ---------------------------------------------------------------------------
+# Summary (printed on normal screen)
+# ---------------------------------------------------------------------------
+done_n=0 skip_n=0 fail_n=0
+for ((i=0;i<TOTAL;i++)); do
+  case "${STATUS[i]}" in
+    done) done_n=$((done_n+1)) ;;
+    skip) skip_n=$((skip_n+1)) ;;
+    fail) fail_n=$((fail_n+1)) ;;
+  esac
+done
+
+echo
+printf '%s⟳ updatetools finished%s in %s\n' "$C_CYAN" "$C_RST" "$(fmt_time $((SECONDS-T0)))"
+printf '  %s✓ %d updated%s   %s– %d skipped%s   %s✗ %d failed%s\n' \
+  "$C_GRN" "$done_n" "$C_RST" "$C_DIM" "$skip_n" "$C_RST" "$C_RED" "$fail_n" "$C_RST"
+
+if [ "$fail_n" -gt 0 ]; then
+  echo
+  echo "Failed steps:"
+  for ((i=0;i<TOTAL;i++)); do
+    [ "${STATUS[i]}" = fail ] && printf '   %s✗%s %s\n' "$C_RED" "$C_RST" "${STEPS[i]%%¦*}"
+  done
+fi
+echo
+echo "Full log: $LOG"
