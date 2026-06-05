@@ -99,7 +99,7 @@ STEPS=(
   "Homebrew · upgrade casks¦have brew¦brew upgrade --cask $GREEDY_FLAG"
   "Homebrew · autoremove + cleanup¦have brew¦brew autoremove; brew cleanup -s"
   "npm · global packages¦have npm¦npm update -g; npm cache verify"
-  "pnpm · global packages¦have pnpm¦pnpm self-update 2>/dev/null||brew upgrade pnpm 2>/dev/null; pnpm update -g --latest"
+  "pnpm · global packages¦have pnpm¦pnpm self-update 2>/dev/null||brew upgrade pnpm 2>/dev/null; pnpm update -g --latest ||true"
   "yarn · stable¦have yarn¦corepack enable; yarn set version stable"
   "bun · self-upgrade¦have bun¦bun upgrade"
   "deno · upgrade¦have deno¦deno upgrade 2>/dev/null||brew upgrade deno"
