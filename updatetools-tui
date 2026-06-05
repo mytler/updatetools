@@ -144,7 +144,8 @@ C_RST=$'\033[0m'; C_DIM=$'\033[2m'; C_CYAN=$'\033[1;36m'
 C_GRN=$'\033[1;32m'; C_RED=$'\033[1;31m'; C_YEL=$'\033[1;33m'
 C_MAG=$'\033[1;35m'; C_BLU=$'\033[1;34m'; C_BLK=$'\033[30m'
 
-cleanup() { tput rmcup 2>/dev/null; tput cnorm 2>/dev/null; }
+SUDO_KEEPER=""
+cleanup() { [ -n "$SUDO_KEEPER" ] && kill "$SUDO_KEEPER" 2>/dev/null; tput rmcup 2>/dev/null; tput cnorm 2>/dev/null; }
 trap 'cleanup; echo; echo "Interrupted. Full log: '"$LOG"'"; exit 130' INT TERM
 
 fmt_time() { printf '%02d:%02d' $(( $1/60 )) $(( $1%60 )); }
@@ -176,6 +177,15 @@ draw_box() {
 
 # Build the banner once — it never changes, so don't recompute it every frame.
 BANNER="$(draw_box "updatetools  ·  keeping your Mac fresh")"
+
+# Prime sudo before entering the alternate screen. Some casks (e.g. Stats)
+# register privileged launchctl helpers that brew removes via sudo; without a
+# cached ticket the subprocess blocks silently while the TUI renders over it.
+sudo_prime() {
+  sudo -n true 2>/dev/null && return 0
+  printf '\n%s\n\n' "$(draw_box "sudo · password required")"
+  sudo -v; local rc=$?; echo; return $rc
+}
 
 render() {
   local running_idx="${1:-} "
@@ -235,6 +245,10 @@ if ! [ -t 1 ]; then
   # Pass --plain so updatetools doesn't try to re-launch this dashboard (exec loop).
   exec "$(dirname "$0")/updatetools" --plain "$@"
 fi
+
+sudo_prime || true
+( while true; do sleep 55; sudo -n -v 2>/dev/null || break; done ) &
+SUDO_KEEPER=$!
 
 tput smcup 2>/dev/null   # alternate screen
 tput civis 2>/dev/null   # hide cursor
