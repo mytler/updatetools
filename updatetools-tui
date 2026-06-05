@@ -144,8 +144,8 @@ C_RST=$'\033[0m'; C_DIM=$'\033[2m'; C_CYAN=$'\033[1;36m'
 C_GRN=$'\033[1;32m'; C_RED=$'\033[1;31m'; C_YEL=$'\033[1;33m'
 C_MAG=$'\033[1;35m'; C_BLU=$'\033[1;34m'; C_BLK=$'\033[30m'
 
-SUDO_KEEPER=""
-cleanup() { [ -n "$SUDO_KEEPER" ] && kill "$SUDO_KEEPER" 2>/dev/null; tput rmcup 2>/dev/null; tput cnorm 2>/dev/null; }
+SUDO_KEEPER=""; WRAP_DIR=""; PROMPT_REQ=""; PROMPT_REP=""
+cleanup() { [ -n "$SUDO_KEEPER" ] && kill "$SUDO_KEEPER" 2>/dev/null; [ -n "$WRAP_DIR" ] && rm -rf "$WRAP_DIR" 2>/dev/null; tput rmcup 2>/dev/null; tput cnorm 2>/dev/null; }
 trap 'cleanup; echo; echo "Interrupted. Full log: '"$LOG"'"; exit 130' INT TERM
 
 fmt_time() { printf '%02d:%02d' $(( $1/60 )) $(( $1%60 )); }
@@ -246,6 +246,30 @@ if ! [ -t 1 ]; then
   exec "$(dirname "$0")/updatetools" --plain "$@"
 fi
 
+# Create an askpass helper so SSH, Git, and sudo -A prompts from background
+# steps get routed through the TUI instead of blocking on /dev/tty.
+# The helper writes the prompt text to a request file and waits for the TUI
+# to write a reply file; the render loop below polls and handles it.
+WRAP_DIR="${TMPDIR:-/tmp}/updatetools-wrap-$$"
+mkdir -p "$WRAP_DIR"
+PROMPT_REQ="${WRAP_DIR}/req"
+PROMPT_REP="${WRAP_DIR}/rep"
+cat > "${WRAP_DIR}/askpass" << 'ASKPASS_EOF'
+#!/bin/bash
+printf '%s' "${1:-Password: }" > "$UPDATETOOLS_PROMPT_REQ"
+while [ ! -f "$UPDATETOOLS_PROMPT_REP" ]; do sleep 0.05; done
+cat "$UPDATETOOLS_PROMPT_REP"
+rm -f "$UPDATETOOLS_PROMPT_REP"
+ASKPASS_EOF
+chmod +x "${WRAP_DIR}/askpass"
+export UPDATETOOLS_PROMPT_REQ="$PROMPT_REQ"
+export UPDATETOOLS_PROMPT_REP="$PROMPT_REP"
+export SUDO_ASKPASS="${WRAP_DIR}/askpass"
+export SSH_ASKPASS="${WRAP_DIR}/askpass"
+export SSH_ASKPASS_REQUIRE="force"
+export GIT_ASKPASS="${WRAP_DIR}/askpass"
+export GIT_TERMINAL_PROMPT=0
+
 sudo_prime || true
 ( while true; do sleep 55; sudo -n -v 2>/dev/null || break; done ) &
 SUDO_KEEPER=$!
@@ -263,13 +287,24 @@ for ((i=0;i<TOTAL;i++)); do
   fi
 
   STATUS[i]="run"
+  rm -f "$PROMPT_REQ" "$PROMPT_REP"
   {
     echo; echo "######## ${entry%%¦*} ########";
     eval "$cmd";
-  } >>"$LOG" 2>&1 &
+  } >>"$LOG" 2>&1 </dev/null &
   pid=$!
 
   while kill -0 "$pid" 2>/dev/null; do
+    if [ -f "$PROMPT_REQ" ]; then
+      prompt=$(cat "$PROMPT_REQ"); rm -f "$PROMPT_REQ"
+      tput rmcup 2>/dev/null; tput cnorm 2>/dev/null
+      printf '\n%s\n\n' "$(draw_box "password required")"
+      printf '   %s' "$prompt"
+      IFS= read -rs reply </dev/tty
+      printf '\n\n'
+      printf '%s\n' "$reply" > "$PROMPT_REP"
+      tput smcup 2>/dev/null; tput civis 2>/dev/null
+    fi
     FRAME=$((FRAME+1))
     render "$i"
     sleep 0.12
