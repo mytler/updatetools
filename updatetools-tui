@@ -85,6 +85,26 @@ update_codex() {
   [ "$updated" = 1 ] || { echo "codex present but no known update source matched"; return 1; }
 }
 
+npm_update_global() {
+  # npm itself lives in /opt/homebrew and is brew-managed; npm update -g includes it
+  # and fails with EACCES. Update only non-npm packages explicitly.
+  local pkgs
+  pkgs=$(npm outdated -g --depth=0 --parseable 2>/dev/null \
+    | cut -d: -f4 | sed 's/@[^@]*$//' | grep -v '^npm$' | tr '\n' ' ')
+  [ -n "$pkgs" ] && npm install -g $pkgs || true
+  # Cache may have root-owned files from an old npm bug; verify non-fatally.
+  npm cache verify || true
+}
+
+pnpm_update_global() {
+  pnpm self-update 2>/dev/null || brew upgrade pnpm 2>/dev/null || true
+  # pnpm's global bin dir may not be in PATH when launched non-interactively.
+  local pnpm_bin
+  pnpm_bin="$(pnpm config get global-bin-dir 2>/dev/null)"
+  [ -n "$pnpm_bin" ] && export PATH="$PATH:$pnpm_bin"
+  pnpm update -g --latest || true
+}
+
 LOG="${TMPDIR:-/tmp}/updatetools-$$.log"
 : > "$LOG"
 
@@ -98,8 +118,8 @@ STEPS=(
   "Homebrew · upgrade formulae¦have brew¦brew upgrade"
   "Homebrew · upgrade casks¦have brew¦brew upgrade --cask $GREEDY_FLAG"
   "Homebrew · autoremove + cleanup¦have brew¦brew autoremove; brew cleanup -s"
-  "npm · global packages¦have npm¦npm update -g; npm cache verify"
-  "pnpm · global packages¦have pnpm¦pnpm self-update 2>/dev/null||brew upgrade pnpm 2>/dev/null; pnpm update -g --latest ||true"
+  "npm · global packages¦have npm¦npm_update_global"
+  "pnpm · global packages¦have pnpm¦pnpm_update_global"
   "yarn · stable¦have yarn¦corepack enable; yarn set version stable"
   "bun · self-upgrade¦have bun¦bun upgrade"
   "deno · upgrade¦have deno¦deno upgrade 2>/dev/null||brew upgrade deno"

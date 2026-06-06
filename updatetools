@@ -128,7 +128,10 @@ if have npm; then
   echo; note "npm global outdated:"
   npm outdated -g --depth=0 || true
   echo; note "npm global update:"
-  npm update -g || true
+  # npm itself is brew-managed; exclude it to avoid EACCES on /opt/homebrew/lib/node_modules/npm.
+  pkgs=$(npm outdated -g --depth=0 --parseable 2>/dev/null \
+    | cut -d: -f4 | sed 's/@[^@]*$//' | grep -v '^npm$' | tr '\n' ' ')
+  [ -n "$pkgs" ] && npm install -g $pkgs || true
   npm cache verify || true
   note "npx: $(npx -v 2>/dev/null || echo 'n/a')"
   note "(npm itself is updated via its installer — brew here — not self-update.)"
@@ -143,6 +146,9 @@ section "pnpm"
 if have pnpm; then
   note "pnpm: $(pnpm -v 2>/dev/null)"
   pnpm self-update 2>/dev/null || brew upgrade pnpm 2>/dev/null || true
+  # Ensure pnpm's global bin dir is in PATH (may be absent in non-interactive shells).
+  pnpm_bin="$(pnpm config get global-bin-dir 2>/dev/null)"
+  [ -n "$pnpm_bin" ] && export PATH="$PATH:$pnpm_bin"
   pnpm update -g --latest || true
 else note "pnpm not found; skipping."; fi
 
