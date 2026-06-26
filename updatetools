@@ -4,12 +4,9 @@
 # Usage:
 #   updatetools                 # animated dashboard (default, on a terminal)
 #   updatetools --plain         # plain scrolling text output (no dashboard)
-#   updatetools --macos         # ALSO install macOS + App Store updates (may reboot!)
-#   updatetools --all           # everything, including macOS updates (alias for --macos)
 #   updatetools --no-greedy     # don't force-upgrade casks that self-manage
 #
 # Env toggles:
-#   MACOS_UPDATES=1             # same as --macos
 #   GREEDY=0                    # same as --no-greedy
 #   PLAIN=1                     # same as --plain
 set -u
@@ -17,7 +14,6 @@ set -u
 # ---------------------------------------------------------------------------
 # Args / config
 # ---------------------------------------------------------------------------
-MACOS_UPDATES="${MACOS_UPDATES:-0}"
 GREEDY="${GREEDY:-1}"
 PLAIN="${PLAIN:-0}"
 
@@ -25,10 +21,9 @@ for arg in "$@"; do
   case "$arg" in
     --plain|--no-pretty|--no-tui) PLAIN=1 ;;
     --pretty|--tui)               PLAIN=0 ;;
-    --macos|--all)                MACOS_UPDATES=1 ;;
     --no-greedy)                  GREEDY=0 ;;
     -h|--help)
-      sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) echo "Unknown option: $arg (use --help)"; exit 2 ;;
   esac
@@ -59,19 +54,6 @@ section() { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
 have()    { command -v "$1" >/dev/null 2>&1; }
 note()    { printf '   %s\n' "$*"; }
 
-# Portable symlink resolver (BSD readlink lacks a reliable -f).
-resolve_link() {
-  local p="$1" t dir
-  while [ -L "$p" ]; do
-    t="$(readlink "$p")"
-    case "$t" in
-      /*) p="$t" ;;
-      *)  dir="$(cd "$(dirname "$p")" && pwd)"; p="$(cd "$dir" && cd "$(dirname "$t")" && pwd)/$(basename "$t")" ;;
-    esac
-  done
-  printf '%s' "$p"
-}
-
 # ---------------------------------------------------------------------------
 # Homebrew PATH
 # ---------------------------------------------------------------------------
@@ -84,9 +66,8 @@ fi
 have brew && note "brew: $(command -v brew)" || note "brew not found"
 
 section "Current tools"
-which -a brew node npm npx pnpm yarn bun deno python3 pip3 pipx uv conda go rustup cargo \
-  gem bundler composer gcloud aws az kubectl helm flutter dotnet \
-  codex supabase vercel gh code docker mas tldr 2>/dev/null || true
+which -a brew node npm npx pnpm uv cargo go gem python3 \
+  supabase vercel gh code docker 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Homebrew
@@ -140,7 +121,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# pnpm / yarn / bun / deno
+# pnpm
 # ---------------------------------------------------------------------------
 section "pnpm"
 if have pnpm; then
@@ -152,24 +133,6 @@ if have pnpm; then
   pnpm update -g --latest || true
 else note "pnpm not found; skipping."; fi
 
-section "yarn"
-if have yarn; then
-  corepack enable 2>/dev/null || true
-  yarn set version stable 2>/dev/null || brew upgrade yarn 2>/dev/null || true
-else note "yarn not found; skipping."; fi
-
-section "bun"
-if have bun; then
-  bun upgrade 2>/dev/null || brew upgrade bun 2>/dev/null || true
-else note "bun not found; skipping."; fi
-
-section "deno"
-if have deno; then
-  note "deno: $(deno --version 2>/dev/null | head -1)"
-  # brew-managed installs can't self-upgrade; try both.
-  deno upgrade 2>/dev/null || brew upgrade deno 2>/dev/null || true
-else note "deno not found; skipping."; fi
-
 # ---------------------------------------------------------------------------
 # Python tooling
 # ---------------------------------------------------------------------------
@@ -180,33 +143,15 @@ if have python3; then
   note "Skipping global pip/setuptools/wheel upgrade (Homebrew Python is externally managed)."
 else note "python3 not found; skipping."; fi
 
-section "pipx packages"
-if have pipx; then
-  pipx upgrade-all || true
-else note "pipx not found; skipping."; fi
-
 section "uv + uv tools"
 if have uv; then
   uv self update 2>/dev/null || brew upgrade uv 2>/dev/null || true
   uv tool upgrade --all 2>/dev/null || true
 else note "uv not found; skipping."; fi
 
-section "conda"
-if have conda; then
-  conda update -n base -c defaults conda -y 2>/dev/null || true
-  conda update --all -y 2>/dev/null || true
-else note "conda not found; skipping."; fi
-
 # ---------------------------------------------------------------------------
 # Rust
 # ---------------------------------------------------------------------------
-section "Rust toolchain"
-if have rustup; then
-  rustup update || true
-else
-  note "rustup not found (rust likely via brew — handled by 'brew upgrade')."
-fi
-
 section "Cargo packages"
 if have cargo; then
   have cargo-install-update || cargo install cargo-update || true
@@ -240,74 +185,8 @@ if have gem; then
 else note "gem not found; skipping."; fi
 
 # ---------------------------------------------------------------------------
-# PHP / Composer
-# ---------------------------------------------------------------------------
-section "Composer"
-if have composer; then
-  composer self-update 2>/dev/null || true
-  composer global update 2>/dev/null || true
-else note "composer not found; skipping."; fi
-
-# ---------------------------------------------------------------------------
-# Version managers (guarded — no-ops if absent)
-# ---------------------------------------------------------------------------
-section "Version managers"
-if have mise; then
-  note "mise:"; mise self-update -y 2>/dev/null || brew upgrade mise 2>/dev/null || true
-  mise upgrade 2>/dev/null || true
-fi
-if have asdf; then
-  note "asdf:"; asdf update 2>/dev/null || true; asdf plugin update --all 2>/dev/null || true
-fi
-if have pyenv;  then note "pyenv:";  (cd "$(pyenv root)"  && git pull --ff-only 2>/dev/null) || brew upgrade pyenv  2>/dev/null || true; fi
-if have rbenv;  then note "rbenv:";  (cd "$(rbenv root)"  && git pull --ff-only 2>/dev/null) || brew upgrade rbenv  2>/dev/null || true; fi
-if have nodenv; then note "nodenv:"; (cd "$(nodenv root)" && git pull --ff-only 2>/dev/null) || brew upgrade nodenv 2>/dev/null || true; fi
-if have fnm;    then note "fnm:";    brew upgrade fnm 2>/dev/null || true; fi
-if have volta;  then note "volta:";  brew upgrade volta 2>/dev/null || true; fi
-if have tfenv;  then note "tfenv:";  brew upgrade tfenv 2>/dev/null || true; fi
-have mise || have asdf || have pyenv || have rbenv || have nodenv || have fnm || have volta || have tfenv || note "no version managers detected; skipping."
-
-# ---------------------------------------------------------------------------
-# Cloud / k8s tooling
-# ---------------------------------------------------------------------------
-section "Cloud & Kubernetes tooling"
-if have gcloud; then note "gcloud:"; gcloud components update --quiet 2>/dev/null || true; fi
-if have az;     then note "az:";     az upgrade --yes 2>/dev/null || true; fi
-if have aws;    then note "aws cli:"; brew upgrade awscli 2>/dev/null || true; fi
-if have helm;   then note "helm repos:"; helm repo update 2>/dev/null || true; fi
-if have kubectl && kubectl krew version >/dev/null 2>&1; then
-  note "krew plugins:"; kubectl krew upgrade 2>/dev/null || true
-fi
-if have flutter; then note "flutter:"; flutter upgrade 2>/dev/null || true; fi
-if have dotnet;  then note "dotnet tools:"; dotnet tool update --global --all 2>/dev/null || true; fi
-have gcloud || have az || have aws || have helm || have flutter || have dotnet || note "no extra cloud tooling detected."
-
-# ---------------------------------------------------------------------------
 # Specific CLIs (install-source aware)
 # ---------------------------------------------------------------------------
-section "Codex CLI"
-if have codex; then
-  # codex CLI may live in a NON-default npm prefix (e.g. iCloud .local).
-  codex_real="$(resolve_link "$(command -v codex)" 2>/dev/null)"
-  case "$codex_real" in
-    */lib/node_modules/@openai/codex/*)
-      codex_prefix="${codex_real%%/lib/node_modules/*}"
-      note "codex CLI npm prefix: $codex_prefix"
-      npm install -g @openai/codex@latest --prefix "$codex_prefix" || true ;;
-    *)
-      if have npm && npm list -g @openai/codex >/dev/null 2>&1; then
-        npm install -g @openai/codex@latest || true
-      else
-        note "codex CLI install source unclear; skipping CLI update."
-      fi ;;
-  esac
-  # codex-app desktop cask is separate from the CLI.
-  if have brew && brew list --cask codex-app >/dev/null 2>&1; then
-    note "Upgrading codex-app cask"
-    brew upgrade --cask codex-app $GREEDY_FLAG || true
-  fi
-else note "codex not found; skipping."; fi
-
 section "Supabase CLI"
 if have supabase; then
   if have brew && brew list supabase >/dev/null 2>&1; then
@@ -335,14 +214,6 @@ if have gh; then
 else note "gh not found; skipping."; fi
 
 # ---------------------------------------------------------------------------
-# tldr / tealdeer cache
-# ---------------------------------------------------------------------------
-section "tldr cache"
-if have tldr; then
-  tldr --update 2>/dev/null || tldr -u 2>/dev/null || true
-else note "tldr not found; skipping."; fi
-
-# ---------------------------------------------------------------------------
 # VS Code extensions
 # ---------------------------------------------------------------------------
 section "VS Code extensions"
@@ -353,40 +224,11 @@ if have code; then
 else note "code command not found; skipping."; fi
 
 # ---------------------------------------------------------------------------
-# Mac App Store
-# ---------------------------------------------------------------------------
-section "Mac App Store apps"
-if have mas; then
-  mas outdated || true
-  if [ "$MACOS_UPDATES" = "1" ]; then
-    mas upgrade || true
-  else
-    note "Pass --macos to install App Store updates."
-  fi
-else note "mas not found; install with 'brew install mas' to manage App Store apps."; fi
-
-# ---------------------------------------------------------------------------
-# macOS / Command Line Tools updates
-# ---------------------------------------------------------------------------
-section "macOS software updates"
-echo "Available updates:"
-softwareupdate -l 2>&1 || true
-if [ "$MACOS_UPDATES" = "1" ]; then
-  echo
-  note "Installing all recommended macOS updates (may require reboot)..."
-  sudo softwareupdate -ia --verbose || true
-else
-  echo
-  note "Not installing OS updates (default). Run 'updatetools --macos' to install them."
-fi
-
-# ---------------------------------------------------------------------------
 # Final versions
 # ---------------------------------------------------------------------------
 section "Final versions"
-for v in "brew --version" "node -v" "npm -v" "npx -v" "pnpm -v" "yarn -v" "bun --version" \
-         "deno --version" "python3 --version" "pipx --version" "uv --version" \
-         "go version" "cargo --version" "gh --version" "docker --version" "swift --version"; do
+for v in "brew --version" "node -v" "npm -v" "npx -v" "pnpm -v" "python3 --version" \
+         "uv --version" "go version" "cargo --version" "gh --version" "docker --version"; do
   out=$(eval "$v" 2>/dev/null | head -1)
   [ -n "$out" ] && printf "%-10s %s\n" "${v%% *}:" "$out"
 done

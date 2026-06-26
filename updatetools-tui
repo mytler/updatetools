@@ -8,8 +8,7 @@
 # for you to press 'q' to quit.
 #
 # Usage:
-#   updatetools-tui            # update all software (no OS reboot)
-#   updatetools-tui --macos    # ALSO install macOS + App Store updates
+#   updatetools-tui            # update all installed software
 #   updatetools-tui --no-greedy
 #   (press q to leave the summary screen)
 set -u
@@ -17,7 +16,6 @@ set -u
 # ---------------------------------------------------------------------------
 # Config / args
 # ---------------------------------------------------------------------------
-MACOS_UPDATES="${MACOS_UPDATES:-0}"
 GREEDY="${GREEDY:-1}"
 # Watchdog: kill a step that emits no output for this many seconds (it's almost
 # certainly wedged). 0 disables. PROMPT_TIMEOUT bounds how long a sudo/ssh prompt
@@ -26,14 +24,13 @@ STALL_TIMEOUT="${STALL_TIMEOUT:-300}"
 PROMPT_TIMEOUT="${PROMPT_TIMEOUT:-300}"
 for arg in "$@"; do
   case "$arg" in
-    --macos|--all) MACOS_UPDATES=1 ;;
     --no-greedy)   GREEDY=0 ;;
     --plain|--no-pretty|--no-tui)
       # Caller explicitly wants plain output — hand off to updatetools --plain.
       plain="$(dirname "$0")/updatetools"
       rest=(); for a in "$@"; do case "$a" in --plain|--no-pretty|--no-tui) ;; *) rest+=("$a") ;; esac; done
       exec "$plain" --plain ${rest[@]+"${rest[@]}"} ;;
-    -h|--help)     sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)     sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $arg"; exit 2 ;;
   esac
 done
@@ -63,41 +60,6 @@ if ! printf '%s' "${LC_ALL:-${LANG:-}}" | grep -qi 'utf-8'; then
     export LC_ALL=en_US.UTF-8
   fi
 fi
-
-# Portable symlink resolver (BSD readlink lacks a reliable -f).
-resolve_link() {
-  local p="$1" t dir
-  while [ -L "$p" ]; do
-    t="$(readlink "$p")"
-    case "$t" in
-      /*) p="$t" ;;
-      *)  dir="$(cd "$(dirname "$p")" && pwd)"; p="$(cd "$dir" && cd "$(dirname "$t")" && pwd)/$(basename "$t")" ;;
-    esac
-  done
-  printf '%s' "$p"
-}
-
-# Codex CLI may be an npm package in a NON-default prefix (e.g. iCloud .local),
-# and/or the codex-app desktop cask. Update whatever is actually present.
-update_codex() {
-  local real prefix updated=0
-  real="$(resolve_link "$(command -v codex)" 2>/dev/null)"
-  case "$real" in
-    */lib/node_modules/@openai/codex/*)
-      prefix="${real%%/lib/node_modules/*}"
-      echo "Updating codex CLI in prefix: $prefix"
-      npm install -g @openai/codex@latest --prefix "$prefix" && updated=1 ;;
-    *)
-      if have npm && npm list -g @openai/codex >/dev/null 2>&1; then
-        npm install -g @openai/codex@latest && updated=1
-      fi ;;
-  esac
-  if have brew && brew list --cask codex-app >/dev/null 2>&1; then
-    echo "Updating codex-app cask"
-    brew upgrade --cask codex-app $GREEDY_FLAG; updated=1
-  fi
-  [ "$updated" = 1 ] || { echo "codex present but no known update source matched"; return 1; }
-}
 
 npm_update_global() {
   # npm itself lives in /opt/homebrew and is brew-managed; npm update -g includes it
@@ -134,31 +96,12 @@ STEPS=(
   "Homebrew · autoremove + cleanup¦have brew¦brew autoremove; brew cleanup -s"
   "npm · global packages¦have npm¦npm_update_global"
   "pnpm · global packages¦have pnpm¦pnpm_update_global"
-  "yarn · stable¦have yarn¦corepack enable; yarn set version stable"
-  "bun · self-upgrade¦have bun¦bun upgrade"
-  "deno · upgrade¦have deno¦deno upgrade 2>/dev/null||brew upgrade deno"
-  "pipx · upgrade all¦have pipx¦pipx upgrade-all"
   "uv · self + tools¦have uv¦{ uv self update 2>/dev/null||brew upgrade uv 2>/dev/null; }; uv tool upgrade --all 2>/dev/null||true"
-  "conda · update all¦have conda¦conda update -n base -c defaults conda -y; conda update --all -y"
-  "rustup · update toolchains¦have rustup¦rustup update"
   "cargo · update binaries¦have cargo¦{ have cargo-install-update||cargo install cargo-update; }; cargo install-update -a"
-  "composer · self + global¦have composer¦composer self-update; composer global update"
-  "mise · self + tools¦have mise¦{ mise self-update -y 2>/dev/null||brew upgrade mise 2>/dev/null; }; mise upgrade"
-  "asdf · plugins¦have asdf¦asdf update; asdf plugin update --all"
-  "gcloud · components¦have gcloud¦gcloud components update --quiet"
-  "az · CLI¦have az¦az upgrade --yes"
-  "helm · repo update¦have helm¦helm repo update"
-  "krew · plugins¦have kubectl && kubectl krew version >/dev/null 2>&1¦kubectl krew upgrade"
-  "flutter · upgrade¦have flutter¦flutter upgrade"
-  "dotnet · global tools¦have dotnet¦dotnet tool update --global --all"
-  "Codex CLI¦have codex¦update_codex"
   "Supabase CLI¦have supabase¦if have brew && brew list supabase >/dev/null 2>&1; then brew upgrade supabase; elif have npm; then npm install -g supabase@latest; fi"
   "Vercel CLI¦have vercel¦if have brew && brew list vercel-cli >/dev/null 2>&1; then brew upgrade vercel-cli; elif have npm && npm list -g vercel >/dev/null 2>&1; then npm install -g vercel@latest; else echo 'vercel present but no known update source matched'; fi"
   "gh · extensions¦have gh¦gh extension upgrade --all"
-  "tldr · cache¦have tldr¦tldr --update 2>/dev/null||tldr -u"
   "VS Code · extensions¦have code¦code --list-extensions|sed '/^[[:space:]]*\$/d'|while IFS= read -r e; do code --install-extension \"\$e\" --force; done"
-  "App Store · upgrade¦have mas && [ \"$MACOS_UPDATES\" = 1 ]¦mas upgrade"
-  "macOS · install updates¦[ \"$MACOS_UPDATES\" = 1 ]¦sudo softwareupdate -ia --verbose"
 )
 
 TOTAL=${#STEPS[@]}
