@@ -372,6 +372,12 @@ for ((i=0;i<TOTAL;i++)); do
   # lapsed, brew still falls back to the askpass prompt below.
   sudo -n -v 2>/dev/null || true
   {
+    # Detach the step from the TUI's controlling terminal. Without this, toggling
+    # the alternate screen / reading /dev/tty for an askpass prompt delivers
+    # SIGHUP (and SIGTTIN/SIGTTOU) to brew's process group — which crashed cask
+    # upgrades with "Error: SIGHUP" mid 'Removing launchctl service ...'. Ignored
+    # dispositions are inherited by brew's children (sudo, launchctl).
+    trap '' HUP TTIN TTOU
     echo; echo "######## ${entry%%¦*} ########";
     eval "$cmd";
   } >>"$LOG" 2>&1 </dev/null &
