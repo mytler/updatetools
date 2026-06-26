@@ -153,7 +153,7 @@ STEPS=(
   "dotnet · global tools¦have dotnet¦dotnet tool update --global --all"
   "Codex CLI¦have codex¦update_codex"
   "Supabase CLI¦have supabase¦if have brew && brew list supabase >/dev/null 2>&1; then brew upgrade supabase; elif have npm; then npm install -g supabase@latest; fi"
-  "Vercel CLI¦have vercel && have npm¦npm install -g vercel@latest"
+  "Vercel CLI¦have vercel¦if have brew && brew list vercel-cli >/dev/null 2>&1; then brew upgrade vercel-cli; elif have npm && npm list -g vercel >/dev/null 2>&1; then npm install -g vercel@latest; else echo 'vercel present but no known update source matched'; fi"
   "gh · extensions¦have gh¦gh extension upgrade --all"
   "tldr · cache¦have tldr¦tldr --update 2>/dev/null||tldr -u"
   "VS Code · extensions¦have code¦code --list-extensions|sed '/^[[:space:]]*\$/d'|while IFS= read -r e; do code --install-extension \"\$e\" --force; done"

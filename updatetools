@@ -319,7 +319,9 @@ else note "supabase not found; skipping."; fi
 
 section "Vercel CLI"
 if have vercel; then
-  if have npm && npm list -g vercel >/dev/null 2>&1; then
+  if have brew && brew list vercel-cli >/dev/null 2>&1; then
+    brew upgrade vercel-cli || true
+  elif have npm && npm list -g vercel >/dev/null 2>&1; then
     npm update -g vercel || npm install -g vercel@latest || true
   else note "vercel install source unclear; skipping."; fi
 else note "vercel not found; skipping."; fi
