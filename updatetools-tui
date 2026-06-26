@@ -159,10 +159,27 @@ FRAME=0
 T0=$SECONDS
 FOOTER=""
 
-# colors
-C_RST=$'\033[0m'; C_DIM=$'\033[2m'; C_CYAN=$'\033[1;36m'
-C_GRN=$'\033[1;32m'; C_RED=$'\033[1;31m'; C_YEL=$'\033[1;33m'
-C_MAG=$'\033[1;35m'; C_BLU=$'\033[1;34m'; C_BLK=$'\033[30m'
+# colors (256-color palette — renders consistently in Terminal.app, iTerm2, etc.)
+C_RST=$'\033[0m'; C_DIM=$'\033[2m'; C_B=$'\033[1m'
+C_CYAN=$'\033[38;5;44m'    # teal accent — title, headings, brand
+C_GRN=$'\033[38;5;48m'     # success
+C_RED=$'\033[38;5;203m'    # failure
+C_YEL=$'\033[38;5;221m'    # in-progress / warning
+C_MAG=$'\033[38;5;176m'    # (kept for compatibility)
+C_BLU=$'\033[38;5;75m'     # secondary accent
+C_GRY=$'\033[38;5;240m'    # track / pending (muted)
+C_FNT=$'\033[38;5;245m'    # faint body text
+
+# Precompute a left-to-right gradient (green → cyan → teal → sky) across the
+# progress bar so each filled cell carries its own hue. Width is fixed, so this
+# is built once rather than every frame.
+BAR_W=30
+RAMP=(48 48 49 50 51 45 44 43 80 80 74 75)
+BAR_COL=()
+for ((_i=0;_i<BAR_W;_i++)); do
+  _ri=$(( _i * ${#RAMP[@]} / BAR_W ))
+  BAR_COL[_i]=$'\033[38;5;'"${RAMP[_ri]}"'m'
+done
 
 SUDO_KEEPER=""; WRAP_DIR=""; PROMPT_REQ=""; PROMPT_REP=""
 cleanup() { [ -n "$SUDO_KEEPER" ] && kill "$SUDO_KEEPER" 2>/dev/null; [ -n "$WRAP_DIR" ] && rm -rf "$WRAP_DIR" 2>/dev/null; tput rmcup 2>/dev/null; tput cnorm 2>/dev/null; }
@@ -170,33 +187,45 @@ trap 'cleanup; echo; echo "Interrupted. Full log: '"$LOG"'"; exit 130' INT TERM
 
 fmt_time() { printf '%02d:%02d' $(( $1/60 )) $(( $1%60 )); }
 
-bar() { # $1 done count, $2 total, width 28
-  local done=$1 total=$2 w=28 filled
+bar() { # $1 done count, $2 total — renders a gradient bar of width BAR_W
+  local done=$1 total=$2 w=$BAR_W filled
   filled=$(( total>0 ? done*w/total : 0 ))
-  local s="" ; local i
-  for ((i=0;i<filled;i++)); do s+="█"; done
+  local s="" i
+  for ((i=0;i<filled;i++)); do s+="${BAR_COL[i]}█"; done
+  s+="$C_GRY"
   for ((i=filled;i<w;i++)); do s+="░"; done
+  s+="$C_RST"
   printf '%s' "$s"
 }
 
-# draw_box <title> — a self-closing box with a black border. Width is fixed and
-# the title is centered by measured length, so the right edge always lines up.
+# draw_box <title> [subtitle] — a self-closing rounded box with a teal border.
+# Width is fixed and each text line is centered by measured length, so the right
+# edge always lines up. A subtitle, when given, renders dim under the title.
 draw_box() {
-  local title="$1" W=44 t left right dash lsp rsp i
+  local title="$1" subtitle="${2:-}" W=48 t left right dash lsp rsp i
   t=${#title}; (( t > W )) && t=$W
   left=$(( (W - t) / 2 )); right=$(( W - t - left ))
   dash=""; for ((i=0;i<W;i++)); do dash+="─"; done
   printf -v lsp '%*s' "$left"  ''
   printf -v rsp '%*s' "$right" ''
-  printf '%s┌%s┐%s\n'         "$C_BLK" "$dash" "$C_RST"
-  printf '%s│%*s│%s\n'        "$C_BLK" "$W" "" "$C_RST"
-  printf '%s│%s%s%s%s%s%s│%s\n' "$C_BLK" "$lsp" "$C_CYAN" "$title" "$C_RST" "$rsp" "$C_BLK" "$C_RST"
-  printf '%s│%*s│%s\n'        "$C_BLK" "$W" "" "$C_RST"
-  printf '%s└%s┘%s\n'         "$C_BLK" "$dash" "$C_RST"
+  printf '%s╭%s╮%s\n'           "$C_CYAN" "$dash" "$C_RST"
+  printf '%s│%*s│%s\n'          "$C_CYAN" "$W" "" "$C_RST"
+  printf '%s│%s%s%s%s%s%s│%s\n' "$C_CYAN" "$lsp" "$C_B$C_CYAN" "$title" "$C_RST" "$rsp" "$C_CYAN" "$C_RST"
+  if [ -n "$subtitle" ]; then
+    local st sl sr slsp srsp
+    st=${#subtitle}; (( st > W )) && st=$W
+    sl=$(( (W - st) / 2 )); sr=$(( W - st - sl ))
+    printf -v slsp '%*s' "$sl" ''
+    printf -v srsp '%*s' "$sr" ''
+    printf '%s│%s%s%s%s%s%s│%s\n' "$C_CYAN" "$slsp" "$C_FNT" "$subtitle" "$C_RST" "$srsp" "$C_CYAN" "$C_RST"
+  else
+    printf '%s│%*s│%s\n'          "$C_CYAN" "$W" "" "$C_RST"
+  fi
+  printf '%s╰%s╯%s\n'           "$C_CYAN" "$dash" "$C_RST"
 }
 
 # Build the banner once — it never changes, so don't recompute it every frame.
-BANNER="$(draw_box "updatetools  ·  keeping your Mac fresh")"
+BANNER="$(draw_box "⟳  updatetools" "keeping your Mac fresh")"
 
 # Prime sudo before entering the alternate screen. Some casks (e.g. Stats)
 # register privileged launchctl helpers that brew removes via sudo; without a
@@ -213,7 +242,7 @@ render() {
   local cols; cols=$(tput cols 2>/dev/null || echo 80)
   printf '\033[H\033[J'   # home + clear to end
 
-  # banner (self-closing box, black border) — precomputed
+  # banner (precomputed rounded box) — centered feel with leading indent
   printf '%s\n\n' "$BANNER"
 
   # progress
@@ -222,29 +251,45 @@ render() {
     case "${STATUS[i]}" in done|skip|fail) fin=$((fin+1));; esac
   done
   local pct=$(( TOTAL>0 ? fin*100/TOTAL : 0 ))
-  printf '  %s[%s]%s  %s%d/%d%s  %s%3d%%%s     ⏱  %s%s%s\n\n' \
-    "$C_BLU" "$(bar "$fin" "$TOTAL")" "$C_RST" \
-    "$C_CYAN" "$fin" "$TOTAL" "$C_RST" \
+  printf '   %s▕%s%s▏   %s%d%s%s/%d%s   %s%d%%%s      %s⏱  %s%s\n\n' \
+    "$C_GRY" "$(bar "$fin" "$TOTAL")" "$C_GRY" \
+    "$C_B$C_CYAN" "$fin" "$C_RST" "$C_FNT" "$TOTAL" "$C_RST" \
     "$C_YEL" "$pct" "$C_RST" \
     "$C_DIM" "$(fmt_time $((SECONDS-T0)))" "$C_RST"
 
-  # step list
+  # step list — split each label into "tool · action"; tool stays prominent,
+  # the action is dimmed, so the column scans top-to-bottom at a glance.
   for ((i=0;i<TOTAL;i++)); do
-    local label="${STEPS[i]%%¦*}"
+    local label="${STEPS[i]%%¦*}" name action
+    name="$label"; action=""
+    if [[ "$label" == *" · "* ]]; then name="${label%% · *}"; action="${label#* · }"; fi
     local icon color
     case "${STATUS[i]}" in
       done) icon="✓"; color="$C_GRN" ;;
-      skip) icon="–"; color="$C_DIM" ;;
+      skip) icon="·"; color="$C_GRY" ;;
       fail) icon="✗"; color="$C_RED" ;;
       run)  icon="$frame_char"; color="$C_YEL" ;;
-      *)    icon="○"; color="$C_DIM" ;;
+      *)    icon="○"; color="$C_GRY" ;;
     esac
-    if [ "${STATUS[i]}" = "skip" ]; then
-      printf '   %s%s %s%s\n' "$color" "$icon" "$label" "$C_RST"
-    else
-      printf '   %s%s%s %s%s\n' "$color" "$icon" "$C_RST" \
-        "$( [ "${STATUS[i]}" = run ] && printf '%s' "$C_YEL" )" "$label$C_RST"
-    fi
+    case "${STATUS[i]}" in
+      skip|pending)
+        # entire row muted
+        if [ -n "$action" ]; then
+          printf '   %s%s  %s %s·%s %s%s\n' "$color" "$icon" "$name" "$C_GRY" "$C_GRY" "$action" "$C_RST"
+        else
+          printf '   %s%s  %s%s\n' "$color" "$icon" "$name" "$C_RST"
+        fi ;;
+      *)
+        local namestyle="$C_RST"
+        [ "${STATUS[i]}" = run ] && namestyle="$C_B$C_YEL"
+        if [ -n "$action" ]; then
+          printf '   %s%s%s  %s%s%s %s·%s %s%s%s\n' \
+            "$color" "$icon" "$C_RST" "$namestyle" "$name" "$C_RST" \
+            "$C_GRY" "$C_RST" "$C_DIM" "$action" "$C_RST"
+        else
+          printf '   %s%s%s  %s%s%s\n' "$color" "$icon" "$C_RST" "$namestyle" "$name" "$C_RST"
+        fi ;;
+    esac
   done
 
   # footer: a pinned summary block (when set) takes priority over the live tail
@@ -253,7 +298,7 @@ render() {
   elif [ -n "${running_idx// /}" ]; then
     local tail_line
     tail_line=$(tail -n 1 "$LOG" 2>/dev/null | tr -d '\r' | cut -c1-$((cols-6)))
-    printf '\n   %s↳ %s%s\n' "$C_DIM" "$tail_line" "$C_RST"
+    printf '\n   %s╰─▶%s %s%s%s\n' "$C_GRY" "$C_RST" "$C_FNT" "$tail_line" "$C_RST"
   fi
 }
 
@@ -348,17 +393,19 @@ done
 ELAPSED="$(fmt_time $((SECONDS-T0)))"
 
 # Build the in-dashboard summary footer.
-printf -v FOOTER '\n   %s⟳ updatetools finished%s in %s\n   %s✓ %d updated%s   %s– %d skipped%s   %s✗ %d failed%s\n' \
-  "$C_CYAN" "$C_RST" "$ELAPSED" \
-  "$C_GRN" "$done_n" "$C_RST" "$C_DIM" "$skip_n" "$C_RST" "$C_RED" "$fail_n" "$C_RST"
+RULE=""; for ((i=0;i<50;i++)); do RULE+="─"; done
+printf -v FOOTER '\n   %s%s%s\n   %s⟳ updatetools finished%s %sin %s%s\n\n   %s✓ %d updated%s    %s· %d skipped%s    %s✗ %d failed%s\n' \
+  "$C_GRY" "$RULE" "$C_RST" \
+  "$C_B$C_CYAN" "$C_RST" "$C_FNT" "$ELAPSED" "$C_RST" \
+  "$C_GRN" "$done_n" "$C_RST" "$C_GRY" "$skip_n" "$C_RST" "$C_RED" "$fail_n" "$C_RST"
 if [ "$fail_n" -gt 0 ]; then
   FOOTER+=$'\n'"   ${C_RED}Failed steps:${C_RST}"$'\n'
   for ((i=0;i<TOTAL;i++)); do
     [ "${STATUS[i]}" = fail ] && FOOTER+="     ${C_RED}✗${C_RST} ${STEPS[i]%%¦*}"$'\n'
   done
 fi
-FOOTER+=$'\n'"   ${C_DIM}Full log: ${LOG}${C_RST}"
-FOOTER+=$'\n\n'"   ${C_YEL}Press q to quit${C_RST}"
+FOOTER+=$'\n'"   ${C_FNT}Full log: ${LOG}${C_RST}"
+FOOTER+=$'\n\n'"   ${C_DIM}press ${C_RST}${C_YEL}q${C_RST}${C_DIM} to quit${C_RST}"
 
 # Render the final summary screen and wait for 'q' (Ctrl-C also exits via trap).
 render
