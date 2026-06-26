@@ -333,16 +333,19 @@ WRAP_DIR="${TMPDIR:-/tmp}/updatetools-wrap-$$"
 mkdir -p "$WRAP_DIR"
 PROMPT_REQ="${WRAP_DIR}/req"
 PROMPT_REP="${WRAP_DIR}/rep"
-cat > "${WRAP_DIR}/askpass" << 'ASKPASS_EOF'
+# The request/reply paths are BAKED IN (unquoted heredoc expands them now)
+# rather than read from the environment: brew scrubs its subprocess env down to
+# an allowlist (HOMEBREW_*, SUDO_ASKPASS, PATH, …), so any custom vars we export
+# get stripped before the helper runs — which left it writing to an empty path
+# and spinning forever while sudo waited (the dashboard hung on launchctl).
+cat > "${WRAP_DIR}/askpass" <<ASKPASS_EOF
 #!/bin/bash
-printf '%s' "${1:-Password: }" > "$UPDATETOOLS_PROMPT_REQ"
-while [ ! -f "$UPDATETOOLS_PROMPT_REP" ]; do sleep 0.05; done
-cat "$UPDATETOOLS_PROMPT_REP"
-rm -f "$UPDATETOOLS_PROMPT_REP"
+printf '%s' "\${1:-Password: }" > "$PROMPT_REQ"
+while [ ! -f "$PROMPT_REP" ]; do sleep 0.05; done
+cat "$PROMPT_REP"
+rm -f "$PROMPT_REP"
 ASKPASS_EOF
 chmod +x "${WRAP_DIR}/askpass"
-export UPDATETOOLS_PROMPT_REQ="$PROMPT_REQ"
-export UPDATETOOLS_PROMPT_REP="$PROMPT_REP"
 export SUDO_ASKPASS="${WRAP_DIR}/askpass"
 export SSH_ASKPASS="${WRAP_DIR}/askpass"
 export SSH_ASKPASS_REQUIRE="force"
