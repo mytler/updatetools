@@ -19,6 +19,11 @@ set -u
 # ---------------------------------------------------------------------------
 MACOS_UPDATES="${MACOS_UPDATES:-0}"
 GREEDY="${GREEDY:-1}"
+# Watchdog: kill a step that emits no output for this many seconds (it's almost
+# certainly wedged). 0 disables. PROMPT_TIMEOUT bounds how long a sudo/ssh prompt
+# waits for input before the step is aborted, so an unattended run never freezes.
+STALL_TIMEOUT="${STALL_TIMEOUT:-300}"
+PROMPT_TIMEOUT="${PROMPT_TIMEOUT:-300}"
 for arg in "$@"; do
   case "$arg" in
     --macos|--all) MACOS_UPDATES=1 ;;
@@ -41,6 +46,15 @@ if [ -x /opt/homebrew/bin/brew ]; then eval "$(/opt/homebrew/bin/brew shellenv)"
 elif [ -x /usr/local/bin/brew ]; then eval "$(/usr/local/bin/brew shellenv)"; fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# Recursively terminate a process and all of its descendants. A background step
+# spawns children (brew → sudo → launchctl, …); killing only the top pid would
+# orphan a wedged child, so walk the tree via pgrep first.
+kill_tree() {
+  local p="$1" c
+  for c in $(pgrep -P "$p" 2>/dev/null); do kill_tree "$c"; done
+  kill -TERM "$p" 2>/dev/null
+}
 
 # Ensure a UTF-8 locale so ${#str} counts characters (not bytes) — keeps the
 # box border aligned regardless of how the shell was invoked.
@@ -353,11 +367,20 @@ for ((i=0;i<TOTAL;i++)); do
 
   STATUS[i]="run"
   rm -f "$PROMPT_REQ" "$PROMPT_REP"
+  # Refresh the cached sudo ticket right before a step that may need root (e.g.
+  # brew removing a cask's launchctl service). -n never prompts; if the ticket
+  # lapsed, brew still falls back to the askpass prompt below.
+  sudo -n -v 2>/dev/null || true
   {
     echo; echo "######## ${entry%%¦*} ########";
     eval "$cmd";
   } >>"$LOG" 2>&1 </dev/null &
   pid=$!
+
+  # Watchdog state: track log growth to detect a wedged step.
+  last_size=$(wc -c < "$LOG" 2>/dev/null); last_size=${last_size// /}
+  last_change=$SECONDS
+  stalled=0
 
   while kill -0 "$pid" 2>/dev/null; do
     if [ -f "$PROMPT_REQ" ]; then
@@ -365,17 +388,44 @@ for ((i=0;i<TOTAL;i++)); do
       tput rmcup 2>/dev/null; tput cnorm 2>/dev/null
       printf '\n%s\n\n' "$(draw_box "password required")"
       printf '   %s' "$prompt"
-      IFS= read -rs reply </dev/tty
-      printf '\n\n'
-      printf '%s\n' "$reply" > "$PROMPT_REP"
-      tput smcup 2>/dev/null; tput civis 2>/dev/null
+      read_args=(-rs)
+      [ "${PROMPT_TIMEOUT:-0}" -gt 0 ] 2>/dev/null && read_args+=(-t "$PROMPT_TIMEOUT")
+      if IFS= read "${read_args[@]}" reply </dev/tty; then
+        printf '\n\n'
+        printf '%s\n' "$reply" > "$PROMPT_REP"
+        tput smcup 2>/dev/null; tput civis 2>/dev/null
+        last_change=$SECONDS   # don't penalise time spent waiting on the user
+      else
+        # No input within PROMPT_TIMEOUT — abort the step cleanly so an
+        # unattended run keeps going instead of blocking forever on the prompt.
+        printf '\n\n'
+        kill_tree "$pid"; sleep 1; kill -KILL "$pid" 2>/dev/null
+        echo "######## no password entered within ${PROMPT_TIMEOUT}s — step aborted ########" >> "$LOG"
+        stalled=1
+        tput smcup 2>/dev/null; tput civis 2>/dev/null
+        break
+      fi
     fi
+
+    # Stall watchdog: no new output for STALL_TIMEOUT seconds => wedged.
+    if [ "${STALL_TIMEOUT:-0}" -gt 0 ] 2>/dev/null; then
+      size=$(wc -c < "$LOG" 2>/dev/null); size=${size// /}
+      if [ "$size" != "$last_size" ]; then
+        last_size=$size; last_change=$SECONDS
+      elif [ $(( SECONDS - last_change )) -ge "$STALL_TIMEOUT" ]; then
+        kill_tree "$pid"; sleep 1; kill -KILL "$pid" 2>/dev/null
+        echo "######## stalled ${STALL_TIMEOUT}s with no output — killed ########" >> "$LOG"
+        stalled=1
+        break
+      fi
+    fi
+
     FRAME=$((FRAME+1))
     render "$i"
     sleep 0.12
   done
-  wait "$pid"; rc=$?
-  [ "$rc" -eq 0 ] && STATUS[i]="done" || STATUS[i]="fail"
+  wait "$pid" 2>/dev/null; rc=$?
+  if [ "$stalled" = 1 ] || [ "$rc" -ne 0 ]; then STATUS[i]="fail"; else STATUS[i]="done"; fi
   render
 done
 
